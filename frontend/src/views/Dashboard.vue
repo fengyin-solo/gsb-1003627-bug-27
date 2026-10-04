@@ -29,6 +29,7 @@
       </tbody>
     </table>
     <footer class="page-foot">
+      <span>看板与业务记录同事务落库，最近更新：{{ updatedAt || '尚未提交' }}</span>
       <span>数据保存在本机浏览器里，换浏览器或清缓存会回到示例数据</span>
     </footer>
   </section>
@@ -42,11 +43,13 @@ import type { OverviewResult } from '@/data/types'
 
 const cards = ref<OverviewResult['cards']>([])
 const moduleRows = ref<OverviewResult['modules']>([])
+const updatedAt = ref('')
 
 function refresh() {
   const payload = loadOverview()
   cards.value = payload.cards
   moduleRows.value = payload.modules
+  updatedAt.value = payload.updatedAt ?? ''
 }
 
 onMounted(refresh)

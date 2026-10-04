@@ -7,6 +7,7 @@
       </div>
       <div class="page-actions">
         <button class="btn primary" type="button" @click="openCreate">登记防火检查站</button>
+        <button class="btn" type="button" @click="syncTodos">同步跨模块待办</button>
         <button class="btn" type="button" @click="exportRows">导出防火检查站清单</button>
       </div>
     </header>
@@ -63,6 +64,33 @@
       </tbody>
     </table>
 
+    <section class="panel todo-panel">
+      <header class="panel-head">
+        <h3>跨模块待办（气象异常现场核查，{{ openTodos.length }} 项待处理）</h3>
+        <span class="muted-text">气象记录标记异常时自动开单，修正/归档时随同一事务销项</span>
+      </header>
+      <table v-if="todos.length" class="data-table">
+        <thead>
+          <tr>
+            <th>待办</th><th>来源</th><th>事由</th><th>状态</th><th>开单时间</th><th>销项时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="todo in todos" :key="todo.key" :class="{ 'resolved-row': todo.status === '已销项' }">
+            <td>{{ todo.title }}</td>
+            <td>{{ todo.sourceModule }}</td>
+            <td>{{ todo.reason }}</td>
+            <td>
+              <span :class="todo.status === '待处理' ? 'abnormal-tag' : 'ok-tag'">{{ todo.status }}</span>
+            </td>
+            <td>{{ todo.createdAt }}</td>
+            <td>{{ todo.resolvedAt || '—' }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="empty-state">暂无跨模块待办</p>
+    </section>
+
     <footer class="page-foot">
       <span>共 {{ total }} 条防火检查站记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
@@ -74,12 +102,14 @@
 import { computed, onMounted, ref } from 'vue'
 
 import {
+  checkpointTodos,
   downloadEntries,
   listEntries,
   moduleMeta,
   runAction as applyAction,
+  syncCheckpointTodosNow,
 } from '@/api/local-service'
-import type { EntryRow } from '@/data/types'
+import type { EntryRow, SyncTodo } from '@/data/types'
 
 const meta = moduleMeta('checkpoint')
 const columns = ["站点编号", "站点位置", "值守人员", "检查项目", "通行车辆数", "收缴火种数", "值班日期", "运行状态"]
@@ -92,12 +122,27 @@ const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+const todos = ref<SyncTodo[]>([])
+const openTodos = computed(() => todos.value.filter((todo) => todo.status === '待处理'))
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
     count: rows.value.filter((row) => String(row.status) === status).length,
   })),
 )
+
+function syncTodos() {
+  errorMessage.value = ''
+  const result = syncCheckpointTodosNow()
+  if (!result.ok) {
+    errorMessage.value = result.message
+  }
+  reloadTodos()
+}
+
+function reloadTodos() {
+  todos.value = checkpointTodos(false)
+}
 
 function resetFilters() {
   filters.value = {}
@@ -128,6 +173,7 @@ function reload() {
     const payload = listEntries(meta.key, filters.value)
     rows.value = payload.items
     total.value = payload.total
+    reloadTodos()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '防火检查站列表读取失败'
   }

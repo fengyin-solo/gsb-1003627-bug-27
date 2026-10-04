@@ -7,6 +7,9 @@
       </div>
       <div class="page-actions">
         <button class="btn primary" type="button" @click="openCreate">登记火险监测点</button>
+        <button class="btn" type="button" :disabled="pulling" @click="pullFromWeather">
+          {{ pulling ? '取数中…' : '气象取数（以原始观测为准）' }}
+        </button>
         <button class="btn" type="button" @click="exportRows">导出火险监测清单</button>
       </div>
     </header>
@@ -64,7 +67,7 @@
     </table>
 
     <footer class="page-foot">
-      <span>共 {{ total }} 条火险监测记录</span>
+      <span>共 {{ total }} 条火险监测记录<span v-if="pullSummary.length"> · {{ pullSummary.join('；') }}</span></span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -77,19 +80,23 @@ import {
   downloadEntries,
   listEntries,
   moduleMeta,
+  pullFirewatchFromWeather,
   runAction as applyAction,
+  currentBoard,
 } from '@/api/local-service'
 import type { EntryRow } from '@/data/types'
 
 const meta = moduleMeta('firewatch')
-const columns = ["监测点编号", "监测区域", "火险等级", "风力等级", "相对湿度", "气温读数", "监测时间", "监测状态"]
+const columns = ["监测点编号", "监测区域", "火险等级", "风力等级", "相对湿度", "气温读数", "监测时间", "取数来源", "监测状态"]
 const actions = ["更新等级", "解除预警", "升级预警"]
 const statuses = ["正常", "蓝色预警", "黄色预警", "橙色预警", "红色预警"]
-const stats = [{"label": "监测点数", "value": 0}, {"label": "红色预警数", "value": 0}, {"label": "今日新增预警", "value": 0}]
+const stats = ref([{"label": "监测点数", "value": 0}, {"label": "红色预警数", "value": 0}, {"label": "今日新增预警", "value": 0}])
 
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const pulling = ref(false)
+const pullSummary = ref<string[]>([])
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
 const statusSummary = computed(() =>
@@ -98,6 +105,33 @@ const statusSummary = computed(() =>
     count: rows.value.filter((row) => String(row.status) === status).length,
   })),
 )
+
+// 取数后指标卡与看板同源刷新，不再各算各的。
+function refreshStats() {
+  const board = currentBoard()
+  const metric = board.modules.find((item) => item.name === meta.name)
+  stats.value = [
+    { label: '监测点数', value: metric?.values['监测点数'] ?? rows.value.length },
+    { label: '红色预警数', value: metric?.values['红色预警数'] ?? 0 },
+    { label: '今日新增预警', value: metric?.values['今日新增预警'] ?? 0 },
+  ]
+}
+
+function pullFromWeather() {
+  errorMessage.value = ''
+  pulling.value = true
+  try {
+    const result = pullFirewatchFromWeather()
+    if (!result.ok) {
+      errorMessage.value = result.message
+      return
+    }
+    pullSummary.value = result.summary ?? []
+    reload()
+  } finally {
+    pulling.value = false
+  }
+}
 
 function resetFilters() {
   filters.value = {}
@@ -128,6 +162,7 @@ function reload() {
     const payload = listEntries(meta.key, filters.value)
     rows.value = payload.items
     total.value = payload.total
+    refreshStats()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '火险监测列表读取失败'
   }
