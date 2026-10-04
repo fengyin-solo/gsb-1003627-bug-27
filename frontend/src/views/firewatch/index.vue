@@ -3,18 +3,32 @@
     <header class="page-head">
       <div>
         <h2>火险监测管理</h2>
-        <p class="page-desc">维护火险监测点，围绕监测点编号、监测区域、火险等级、风力等级做登记、筛选与状态流转。</p>
+        <p class="page-desc">火险读数统一从气象原始观测取数：冲突时以原始记录为准，历史缺测按原采样兼容，缺测不按零值计算。</p>
       </div>
       <div class="page-actions">
-        <button class="btn primary" type="button" @click="openCreate">登记火险监测点</button>
+        <button class="btn primary" type="button" :disabled="syncing" @click="syncFromWeather">
+          {{ syncing ? '取数中…' : '按气象原始记录重新取数' }}
+        </button>
         <button class="btn" type="button" @click="exportRows">导出火险监测清单</button>
       </div>
     </header>
 
     <div class="stat-row">
-      <article v-for="item in stats" :key="item.label" class="stat-card">
-        <span class="stat-label">{{ item.label }}</span>
-        <strong class="stat-value">{{ item.value }}</strong>
+      <article class="stat-card">
+        <span class="stat-label">监测点数</span>
+        <strong class="stat-value">{{ stats.total }}</strong>
+      </article>
+      <article class="stat-card" :class="{ 'stat-alert': stats.redCount > 0 }">
+        <span class="stat-label">红色预警数</span>
+        <strong class="stat-value">{{ stats.redCount }}</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">在预警点数</span>
+        <strong class="stat-value">{{ stats.warningCount }}</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">含缺测因子点</span>
+        <strong class="stat-value">{{ stats.missingCount }}</strong>
       </article>
     </div>
 
@@ -43,8 +57,12 @@
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
-          <td>{{ row.status }}</td>
+          <td v-for="column in columns" :key="column" :class="{ 'cell-missing': isMissingCell(row[column]) }">
+            {{ displayCell(row[column]) }}
+          </td>
+          <td>
+            <span class="status-tag" :data-status="row.status">{{ row.status }}</span>
+          </td>
           <td class="row-actions">
             <button
               v-for="action in actions"
@@ -58,14 +76,15 @@
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无火险监测数据，可先登记火险监测点</td>
+          <td :colspan="columns.length + 2" class="empty-state">暂无火险监测数据</td>
         </tr>
       </tbody>
     </table>
 
     <footer class="page-foot">
-      <span>共 {{ total }} 条火险监测记录</span>
+      <span>共 {{ total }} 个火险监测点 · 取数与气象记录、看板同事务落库，失败整体退回</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
+      <span v-else-if="successMessage" class="success-text">{{ successMessage }}</span>
     </footer>
   </section>
 </template>
@@ -75,29 +94,45 @@ import { computed, onMounted, ref } from 'vue'
 
 import {
   downloadEntries,
+  filterRows,
+  firewatchStats,
   listEntries,
   moduleMeta,
+  refreshFirewatch,
   runAction as applyAction,
 } from '@/api/local-service'
+import { listRows } from '@/data/local-store'
+import { displayValue } from '@/data/format'
 import type { EntryRow } from '@/data/types'
 
 const meta = moduleMeta('firewatch')
-const columns = ["监测点编号", "监测区域", "火险等级", "风力等级", "相对湿度", "气温读数", "监测时间", "监测状态"]
-const actions = ["更新等级", "解除预警", "升级预警"]
-const statuses = ["正常", "蓝色预警", "黄色预警", "橙色预警", "红色预警"]
-const stats = [{"label": "监测点数", "value": 0}, {"label": "红色预警数", "value": 0}, {"label": "今日新增预警", "value": 0}]
+const columns = ['监测点编号', '监测区域', '火险等级', '风力等级', '相对湿度', '气温读数', '降水量', '监测时间', '取数来源', '监测状态']
+const actions = ['更新等级', '解除预警', '升级预警']
+const statuses = ['正常', '蓝色预警', '黄色预警', '橙色预警', '红色预警', '缺测']
 
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const successMessage = ref('')
+const syncing = ref(false)
 const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const filterFields = ['监测点编号', '监测区域', '火险等级']
+const stats = ref({ total: 0, redCount: 0, warningCount: 0, missingCount: 0 })
+
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
     count: rows.value.filter((row) => String(row.status) === status).length,
   })),
 )
+
+function displayCell(value: unknown): string {
+  return displayValue(value)
+}
+
+function isMissingCell(value: unknown): boolean {
+  return displayValue(value) === '缺测'
+}
 
 function resetFilters() {
   filters.value = {}
@@ -108,29 +143,41 @@ function exportRows() {
   downloadEntries(meta.key)
 }
 
-function openCreate() {
-  errorMessage.value = '火险监测点登记入口尚未接入审批流'
+function syncFromWeather() {
+  errorMessage.value = ''
+  successMessage.value = ''
+  syncing.value = true
+  try {
+    const result = refreshFirewatch()
+    if (result.ok) {
+      successMessage.value = result.message
+    } else {
+      errorMessage.value = result.message
+    }
+    reload()
+  } finally {
+    syncing.value = false
+  }
 }
 
 function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
+  successMessage.value = ''
   const result = applyAction(meta.key, Number(row.id), action)
   if (!result.ok) {
     errorMessage.value = result.message
     return
   }
+  successMessage.value = result.message
   reload()
 }
 
 function reload() {
-  errorMessage.value = ''
-  try {
-    const payload = listEntries(meta.key, filters.value)
-    rows.value = payload.items
-    total.value = payload.total
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '火险监测列表读取失败'
-  }
+  // 直接读存储里的取数结果，保证页面与气象侧落库的是同一份数据。
+  const matched = filterRows(listRows(meta.key), filters.value)
+  rows.value = matched
+  total.value = matched.length
+  stats.value = firewatchStats()
 }
 
 onMounted(reload)

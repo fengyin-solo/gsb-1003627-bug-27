@@ -67,5 +67,16 @@ npm run build
   `frontend/src/api/local-service.ts`。
 - 字段、状态、动作与流转目标集中在 `frontend/src/data/modules.ts`；示例数据在
   `frontend/src/data/seed.ts`。
-- 状态流转只允许在 `local-service.ts` 里改，页面组件不做业务判断。
+- 状态流转只允许在 `local-service.ts` 里改，页面组件不做业务判断。模块可配置 `transitions`
+  状态机、`pendingStatuses` 待办口径、`abnormalStatuses` 异常口径；未配置的模块沿用旧口径。
+- 气象与火险调用链：`src/data/weather.ts` 是气象领域层。气象观测（weather）是唯一事实源，
+  火险监测（firewatch）的读数由气象记录派生（`syncFirewatchFromWeather`），冲突时以原始采样
+  记录为准。历史缺测写法（"缺测"、-999 等）入库时归一为 `null`，展示为「缺测」，绝不写成
+  有效零值；补值采用同站相邻采样线性插值（气温/湿度/风速），降水属事件量不插值，并在
+  「取数来源」列标注「原/补/缺」。
+- 异常记录只能进入「修正」或「归档」：气象异常态由 `transitions` 状态机锁死出口，异常面板
+  （气象页「异常面板」标签）直接读取异常态记录并按编号去重，不留旧副本。
+- 记录与看板同次落库：所有写操作走 `local-store.ts` 的 `commit`，气象记录、火险取数与看板
+  快照在同一事务写入 localStorage；序列化或写入失败时内存恢复到提交前，两边一起退回。
 - 想回到初始数据：清掉浏览器里 `forest-fire-patrol:entries` 这一项，或调用 `resetModule(模块)`。
+  旧版只存记录数组的数据格式会在加载时自动迁移为「记录 + 看板快照」。

@@ -12,9 +12,17 @@
     </header>
 
     <div class="stat-row">
-      <article v-for="item in stats" :key="item.label" class="stat-card">
-        <span class="stat-label">{{ item.label }}</span>
-        <strong class="stat-value">{{ item.value }}</strong>
+      <article class="stat-card">
+        <span class="stat-label">站点总数</span>
+        <strong class="stat-value">{{ stats.total }}</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">正常检查数</span>
+        <strong class="stat-value">{{ stats.normalCount }}</strong>
+      </article>
+      <article class="stat-card" :class="{ 'stat-alert': stats.todoCount > 0 }">
+        <span class="stat-label">检查站待办（与看板同步）</span>
+        <strong class="stat-value">{{ stats.todoCount }}</strong>
       </article>
     </div>
 
@@ -44,10 +52,12 @@
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
-          <td>{{ row.status }}</td>
+          <td>
+            <span class="status-tag" :data-status="row.status">{{ row.status }}</span>
+          </td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in allowedActions(row.status)"
               :key="action"
               class="link"
               type="button"
@@ -55,6 +65,7 @@
             >
               {{ action }}
             </button>
+            <span v-if="!allowedActions(row.status).length" class="muted-text">无可用动作</span>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -64,8 +75,9 @@
     </table>
 
     <footer class="page-foot">
-      <span>共 {{ total }} 条防火检查站记录</span>
+      <span>共 {{ total }} 条防火检查站记录 · 待办随状态实时同步到运营概览</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
+      <span v-else-if="successMessage" class="success-text">{{ successMessage }}</span>
     </footer>
   </section>
 </template>
@@ -79,25 +91,32 @@ import {
   moduleMeta,
   runAction as applyAction,
 } from '@/api/local-service'
+import { listRows } from '@/data/local-store'
 import type { EntryRow } from '@/data/types'
 
 const meta = moduleMeta('checkpoint')
 const columns = ["站点编号", "站点位置", "值守人员", "检查项目", "通行车辆数", "收缴火种数", "值班日期", "运行状态"]
-const actions = ["升级检查", "关闭站点", "安排换岗"]
 const statuses = ["正常检查", "临时关闭", "升级检查", "等待换岗"]
-const stats = [{"label": "站点总数", "value": 0}, {"label": "正常检查数", "value": 0}, {"label": "收缴火种数", "value": 0}]
 
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const successMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+const stats = ref({ total: 0, normalCount: 0, todoCount: 0 })
+
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
     count: rows.value.filter((row) => String(row.status) === status).length,
   })),
 )
+
+/** 动作完全按元数据里的状态机出：等待换岗的站只能升级检查或恢复检查（换岗完成清待办）。 */
+function allowedActions(status: string): string[] {
+  return meta.transitions?.[status] ?? []
+}
 
 function resetFilters() {
   filters.value = {}
@@ -114,11 +133,13 @@ function openCreate() {
 
 function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
+  successMessage.value = ''
   const result = applyAction(meta.key, Number(row.id), action)
   if (!result.ok) {
     errorMessage.value = result.message
     return
   }
+  successMessage.value = result.message
   reload()
 }
 
@@ -128,6 +149,12 @@ function reload() {
     const payload = listEntries(meta.key, filters.value)
     rows.value = payload.items
     total.value = payload.total
+    const all = listRows(meta.key)
+    stats.value = {
+      total: all.length,
+      normalCount: all.filter((row) => String(row.status) === '正常检查').length,
+      todoCount: all.filter((row) => row.pending).length,
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '防火检查站列表读取失败'
   }
